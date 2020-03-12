@@ -140,16 +140,13 @@ let add_perms = function(sheetID, userID, perm) {
   // Here we assume B is the owner
 
   // get the user's derived key
-  let derived_key = crypto.scryptSync(R_B, 'salt', 24);
+  let derivedKey = crypto.scryptSync(R_B, 'salt', 24);
   
   // use the derived key to get the secret key
   let ciphered_secret = repo["B"][1];
+ 
+  let deciphered_secret = aesDecrypt(ciphered_secret, derivedKey);
   
-  let decipher = crypto.createDecipheriv(algorithm, derived_key, iv);
-  
-  let deciphered_secret = decipher.update(ciphered_secret, 'hex', 'utf8');
-  deciphered_secret += decipher.final('utf8');
-
   // use it to get the sheet key
   let owner_ciphered_sheet_key = perms[sheetID]["B"][1];
   let deciphered_sheet_key = crypto.privateDecrypt(deciphered_secret, owner_ciphered_sheet_key);
@@ -174,11 +171,8 @@ let add_grade = function(sheetID, value, userID) {
   // verify the user has permissions to add a grade
   // generate the symmetric sheet_key
   sheet_key = crypto.randomBytes(24);
-  
-  const cipher = crypto.createCipheriv(algorithm, sheet_key, iv);
-  
-  let ciphered_value = cipher.update(value, 'utf8', 'hex');
-  ciphered_value += cipher.final('hex');
+
+  let ciphered_value = aesEncrypt(value, sheet_key);
 
   // for each person with permissions, add their permission to see the grades,
   // in this baby example, say we are uploading A's grade so everyone has permissions
@@ -220,17 +214,11 @@ http.createServer(function (req, res) {
   let A_ciphered_secret = repo["A"][1];
 
   // decipher the secret key using the derived key from the temp password
-  let decipher = crypto.createDecipheriv(algorithm, prev_derived_key, iv);
-  
-  let A_deciphered_secret = decipher.update(A_ciphered_secret, 'hex', 'utf8');
-  A_deciphered_secret += decipher.final('utf8');
+  let A_deciphered_secret = aesDecrypt(A_ciphered_secret, prev_derived_key);
  
   
   // hide the secret with the key derived from the user password
-  let cipher = crypto.createCipheriv(algorithm, new_derived_key, iv);
-
-  let changed_password_secret = cipher.update(A_deciphered_secret, 'utf8', 'hex');
-  changed_password_secret += cipher.final('hex');
+  let changed_password_secret = aesEncrypt(A_deciphered_secret, new_derived_key);
 
   repo["A"][1] = changed_password_secret;
 
@@ -240,9 +228,7 @@ http.createServer(function (req, res) {
   let full_key = secrets.random(96);
 
   // encrypt the secret with the full key
-  cipher = crypto.createCipheriv(algorithm, full_key, iv);
-  let secret_under_full_key = cipher.update(A_deciphered_secret, 'utf8', 'hex');
-  secret_under_full_key += cipher.final('hex');
+  let secret_under_full_key = aesEncrypt(A_deciphered_secret, full_key);
 
   // add the encrypted with full key to the repo
   repo["A"][2]["Key"] = secret_under_full_key;
@@ -269,7 +255,6 @@ http.createServer(function (req, res) {
   repo["A"][2]["D"] = cipher_share_2;
 
   res.writeHead(200, {'Content-Type': 'text/plain'});
-  // res.end('Boo!');
   res.end('You should see two identical keys below, before and after share and combine.\n\n' +
     full_key + '\n' + comb + '\n\nThe secret should also be able to be uncovered from either the' +
     ' derived key or the full key split into shares\n\n\n');
