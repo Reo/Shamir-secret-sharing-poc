@@ -1,17 +1,35 @@
 const http = require('http');
-const secrets = require('../../../node_modules/secrets.js-grempe/secrets.js');
+const secrets = require('../../../../node_modules/secrets.js-grempe/secrets.js');
 const crypto = require('crypto');
 
+// perms[sheetID]["user"]: {<owner, writer, reader>, sheet_key_under_user's_public_key}
 var perms = {};
+
+// answers[sheetID]: value_under_sheet_key
 var answers = {};
+
+// repo["user"]: [public_key, secret_under_derived, {/*recovery*/}]
+// recovery["key"]: key_under_shares
+// recovery["trusted_user"]: share_under_user's_public_key
 var repo = {};
 
-var R_A;
-var R_B;
-var R_C;
-var R_D;
+// these are not in fact stored in the server but rather
+// are the passwords of the users the first of which are
+// temporary passwords which are sent to the users to
+// conplete the initialization process
+var R_A; // regular user
+var R_B; // owner
+var R_C; // writer
+var R_D; // auditor
+var pwds = {};
+
+// this enumerates the sheets in order
+var currentSheet = 0;
 
 const algorithm = 'aes-192-cbc';
+
+// for AES CBC mode these may be stored in the database
+// often prepending the ciphertext
 const iv = Buffer.alloc(16, 0);
 
 let initUser = function(c, nonce){
@@ -39,7 +57,7 @@ let initUser = function(c, nonce){
   // hide the secret key using the derived key
   derivedKey = crypto.scryptSync(nonce, 'salt', 24);
   
-  let cipher = crypto.createCipheriv(algorithm, derivedKey, iv);
+  const cipher = crypto.createCipheriv(algorithm, derivedKey, iv);
   
   let secret = cipher.update(secretKey, 'utf8', 'hex');
   secret += cipher.final('hex');
@@ -51,7 +69,7 @@ let initUser = function(c, nonce){
 /*
  * initialize the users
  */
-let init = function(){
+let init = function() {
   // initialize each user
   R_A = crypto.randomBytes(128);
   initUser("A", R_A);
@@ -61,6 +79,121 @@ let init = function(){
   initUser("C", R_C);
   R_D = crypto.randomBytes(128);
   initUser("D", R_D);
+}
+
+
+// get value (grade) of sheetID making sure that the current user
+// has the required permissions.
+// For now we pass in current_user as an argument
+let get_value = function(sheetID, current_user) {
+  // check if the user has permissions to access the grade
+  perm = perms[sheetID][current_user][0]
+  if (perm == undefined) {
+    return -1;
+  }
+  // get the user's derived key
+  let derived_key = crypto.scryptSync(pwds[current_user], 'salt', 24);
+
+  // use the derived key to get the secret key
+  let ciphered_secret = repo[current_user][1];
+
+  let decipher = crypto.createDecipheriv(algorithm, derived_key, iv);
+
+  let deciphered_secret = decipher.update(ciphered_secret, 'hex', 'utf8');
+  deciphered_secret += decipher.final('utf8');
+
+  // use it to get the sheet key
+  let ciphered_sheet_key = perms[sheetID][current_user][1];
+  let deciphered_sheet_key = crypto.privateDecrypt(deciphered_secret, ciphered_sheet_key);
+
+  // and use that to get the value
+  let ciphered_value = answers[sheetID];
+
+  let decipher_sheet = crypto.createDecipheriv(algorithm, deciphered_sheet_key, iv);
+
+  let deciphered_value = decipher_sheet.update(ciphered_value, 'hex', 'utf8');
+  deciphered_value += decipher_sheet.final('utf8');
+
+  return deciphered_value;
+}
+
+
+
+// add permissions:
+//
+// check that the user which is attempting to change permissions has owner privilages
+// get K_ID from perms(owner)
+let add_perms = function(sheetID, userID, perm) {
+  // verify that the user has permissions to change permissions
+  // ie. if perms[sheetID][current_user][0] == "owner"
+  // Here we assume B is the owner
+
+  // get the user's derived key
+  let derived_key = crypto.scryptSync(R_B, 'salt', 24);
+  
+  // use the derived key to get the secret key
+  let ciphered_secret = repo["B"][1];
+  
+  let decipher = crypto.createDecipheriv(algorithm, derived_key, iv);
+  
+  let deciphered_secret = decipher.update(ciphered_secret, 'hex', 'utf8');
+  deciphered_secret += decipher.final('utf8');
+
+  // use it to get the sheet key
+  let owner_ciphered_sheet_key = perms[sheetID]["B"][1];
+  let deciphered_sheet_key = crypto.privateDecrypt(deciphered_secret, owner_ciphered_sheet_key);
+
+  // now encrypt this key with the public key of whoever you want to add the permissions to
+  let pub_u = repo[userID][0];
+  let new_ciphered_sheet_key = crypto.publicEncrypt(pub_u, deciphered_sheet_key);
+
+  // and we simply update the permissions
+  perms[sheetID][userID] = [perm, new_ciphered_sheet_key];
+}
+
+// add_grade:
+//
+// verify has permissions to add a grade
+// generate sheet_key
+// for each person with permissions, add a permission to see the grade
+// add the answer
+// here we need the sheetID which will be assigned value and the
+// non-privilaged user (student) which will be able to see it
+let add_grade = function(sheetID, value, userID) {
+  // verify the user has permissions to add a grade
+  // generate the symmetric sheet_key
+  sheet_key = crypto.randomBytes(24);
+  
+  const cipher = crypto.createCipheriv(algorithm, sheet_key, iv);
+  
+  let ciphered_value = cipher.update(value, 'utf8', 'hex');
+  ciphered_value += cipher.final('hex');
+
+  // for each person with permissions, add their permission to see the grades,
+  // in this baby example, say we are uploading A's grade so everyone has permissions
+  perms[sheetID] = {};
+
+  // here we suppose the owner, the writer, and the auditor automatically have
+  // permission to open value. B is the owner, C is the writer, and D is the auditor
+  let pub_o = repo["B"][0];
+  let owner_ciphered_key = crypto.publicEncrypt(pub_o, sheet_key);
+  perms[sheetID]["B"] = ["owner", owner_ciphered_key];
+  
+  let pub_w = repo["C"][0];
+  let writer_ciphered_key = crypto.publicEncrypt(pub_w, sheet_key);
+  perms[sheetID]["C"] = ["writer", writer_ciphered_key];
+  
+  let pub_a = repo["D"][0];
+  let auditor_ciphered_key = crypto.publicEncrypt(pub_a, sheet_key);
+  perms[sheetID]["D"] = ["auditor", auditor_ciphered_key];
+
+  // the student should also get permission to see their grade
+  let pub_u = repo[userID][0];
+  let user_ciphered_key = crypto.publicEncrypt(pub_u, sheet_key);
+  perms[sheetID][userID] = ["reader", user_ciphered_key];
+
+  // finally, we add the answer
+  answers[sheetID] = ciphered_value;
 }
 
 
@@ -132,6 +265,23 @@ http.createServer(function (req, res) {
 }).listen(8080, '127.0.0.1');
 console.log('Server running at http://127.0.0.1:8080/');
 
-
 init();
+
+add_grade(currentSheet, "50", "A");
+console.log(perms);
+console.log(answers);
+
+currentSheet++;
+
+add_perms(0, "A", "auditor");
+console.log(perms);
+console.log(answers);
+
+// it is convenient to have an object which stores the passwords of the users
+// for simulating purposes
+pwds = {"A": R_A, "B": R_B, "C": R_C, "D": R_D};
+
+let x = get_value(0,"B");
+console.log(x);
+
 
