@@ -32,6 +32,27 @@ const algorithm = 'aes-192-cbc';
 // often prepending the ciphertext
 const iv = Buffer.alloc(16, 0);
 
+
+let aesEncrypt = function(plaintext, key) {
+  const cipher = crypto.createCipheriv(algorithm, key, iv)
+  
+  let ciphertext = cipher.update(plaintext,'utf8','hex')
+  ciphertext += cipher.final('hex');
+  
+  return ciphertext;
+}
+
+let aesDecrypt = function(ciphertext, key) {
+  const decipher = crypto.createDecipheriv(algorithm, key, iv);
+  
+  let plaintext = decipher.update(ciphertext, 'hex', 'utf8');
+  plaintext += decipher.final('utf8');
+  
+  return plaintext
+}
+
+
+
 let initUser = function(c, nonce){
   let publicKey;
   let secretKey;
@@ -56,11 +77,8 @@ let initUser = function(c, nonce){
 
   // hide the secret key using the derived key
   derivedKey = crypto.scryptSync(nonce, 'salt', 24);
-  
-  const cipher = crypto.createCipheriv(algorithm, derivedKey, iv);
-  
-  let secret = cipher.update(secretKey, 'utf8', 'hex');
-  secret += cipher.final('hex');
+
+  let secret = aesEncrypt(secretKey, derivedKey);
  
   // add the required things of A to the repo
   repo[c] = [publicKey, secret, {}];
@@ -92,15 +110,12 @@ let get_value = function(sheetID, current_user) {
     return -1;
   }
   // get the user's derived key
-  let derived_key = crypto.scryptSync(pwds[current_user], 'salt', 24);
+  let derivedKey = crypto.scryptSync(pwds[current_user], 'salt', 24);
 
   // use the derived key to get the secret key
   let ciphered_secret = repo[current_user][1];
 
-  let decipher = crypto.createDecipheriv(algorithm, derived_key, iv);
-
-  let deciphered_secret = decipher.update(ciphered_secret, 'hex', 'utf8');
-  deciphered_secret += decipher.final('utf8');
+  let deciphered_secret = aesDecrypt(ciphered_secret, derivedKey);
 
   // use it to get the sheet key
   let ciphered_sheet_key = perms[sheetID][current_user][1];
@@ -109,11 +124,7 @@ let get_value = function(sheetID, current_user) {
   // and use that to get the value
   let ciphered_value = answers[sheetID];
 
-  let decipher_sheet = crypto.createDecipheriv(algorithm, deciphered_sheet_key, iv);
-
-  let deciphered_value = decipher_sheet.update(ciphered_value, 'hex', 'utf8');
-  deciphered_value += decipher_sheet.final('utf8');
-
+  let deciphered_value = aesDecrypt(ciphered_value, deciphered_sheet_key)
   return deciphered_value;
 }
 
