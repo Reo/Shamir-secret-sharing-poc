@@ -14,7 +14,7 @@ var answers = {};
 var repo = {};
 
 //  salt["user"]: corresponding salt used with scrypt KDF
-var salt = {};
+var salts = {};
 
 // privateIV["user"]: IV used to encrypt user's private key with KDF
 var privateIV  = {};
@@ -88,7 +88,9 @@ let initUser = function(c, nonce){
   secretKey = keys.privateKey;
 
   // hide the secret key using the derived key
-  derivedKey = crypto.scryptSync(nonce, 'salt', 24);
+  let salt = crypto.randomBytes(16);
+  salts[c] = salt;
+  derivedKey = crypto.scryptSync(nonce, salt, 24);
 
   let iv = crypto.randomBytes(16);
   privateIV[c] = iv;
@@ -126,7 +128,8 @@ let get_value = function(sheetID, current_user) {
     return -1;
   }
   // get the user's derived key
-  let derivedKey = crypto.scryptSync(pwds[current_user], 'salt', 24);
+  let salt = salts[current_user];
+  let derivedKey = crypto.scryptSync(pwds[current_user], salt, 24);
 
   // use the derived key to get the secret key
   let ciphered_secret = repo[current_user][1];
@@ -158,7 +161,8 @@ let add_perms = function(sheetID, userID, perm) {
   // Here we assume B is the owner
 
   // get the user's derived key
-  let derivedKey = crypto.scryptSync(R_B, 'salt', 24);
+  let salt = salts["B"];
+  let derivedKey = crypto.scryptSync(R_B, salt, 24);
   
   // use the derived key to get the secret key
   let ciphered_secret = repo["B"][1];
@@ -226,12 +230,17 @@ let add_grade = function(sheetID, value, userID) {
 
 http.createServer(function (req, res) {
   // grab the previous key simulating the user having entered it
-  let prev_derived_key = crypto.scryptSync(R_A, 'salt', 24);
+  let salt = salts["A"];
+  let prev_derived_key = crypto.scryptSync(R_A, salt, 24);
   
   // simulate A having chosen a new password to replace the temporary one
   let chosen_password = 'password123';
   R_A = chosen_password;
-  let new_derived_key = crypto.scryptSync(chosen_password, 'salt', 24);
+
+  // generate a new salt along with it
+  salt = crypto.randomBytes(16);
+  salts["A"] = salt;
+  let new_derived_key = crypto.scryptSync(chosen_password, salt, 24);
   
   let A_ciphered_secret = repo["A"][1];
 
