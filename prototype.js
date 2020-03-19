@@ -13,6 +13,18 @@ var answers = {};
 // recovery["trusted_user"]: share_under_user's_public_key
 var repo = {};
 
+//  salt["user"]: corresponding salt used with scrypt KDF
+var salt = {};
+
+// privateIV["user"]: IV used to encrypt user's private key with KDF
+var privateIV  = {};
+
+// valueIV[sheetID]: IV used to encrypt the value which corresponds to sheetID
+var valueIV = {};
+
+// recoveryIV["user"]: IV used to encrypt the user's private key with shared key used for recovery
+var recoveryIV = {};
+
 // these are not in fact stored in the server but rather
 // are the passwords of the users the first of which are
 // temporary passwords which are sent to the users to
@@ -30,10 +42,10 @@ const algorithm = 'aes-192-cbc';
 
 // for AES CBC mode these may be stored in the database
 // often prepending the ciphertext
-const iv = Buffer.alloc(16, 0);
+// const iv = Buffer.alloc(16, 0);
 
 
-let aesEncrypt = function(plaintext, key) {
+let aesEncrypt = function(plaintext, key, iv) {
   const cipher = crypto.createCipheriv(algorithm, key, iv)
   
   let ciphertext = cipher.update(plaintext,'utf8','hex')
@@ -42,7 +54,7 @@ let aesEncrypt = function(plaintext, key) {
   return ciphertext;
 }
 
-let aesDecrypt = function(ciphertext, key) {
+let aesDecrypt = function(ciphertext, key, iv) {
   const decipher = crypto.createDecipheriv(algorithm, key, iv);
   
   let plaintext = decipher.update(ciphertext, 'hex', 'utf8');
@@ -78,11 +90,15 @@ let initUser = function(c, nonce){
   // hide the secret key using the derived key
   derivedKey = crypto.scryptSync(nonce, 'salt', 24);
 
-  let secret = aesEncrypt(secretKey, derivedKey);
+  let iv = crypto.randomBytes(16);
+  privateIV[c] = iv;
+  let secret = aesEncrypt(secretKey, derivedKey, iv);
  
   // add the required things of A to the repo
   repo[c] = [publicKey, secret, {}];
 }
+
+
 
 /*
  * initialize the users
@@ -115,7 +131,8 @@ let get_value = function(sheetID, current_user) {
   // use the derived key to get the secret key
   let ciphered_secret = repo[current_user][1];
 
-  let deciphered_secret = aesDecrypt(ciphered_secret, derivedKey);
+  let iv = privateIV[current_user];
+  let deciphered_secret = aesDecrypt(ciphered_secret, derivedKey, iv);
 
   // use it to get the sheet key
   let ciphered_sheet_key = perms[sheetID][current_user][1];
@@ -124,7 +141,8 @@ let get_value = function(sheetID, current_user) {
   // and use that to get the value
   let ciphered_value = answers[sheetID];
 
-  let deciphered_value = aesDecrypt(ciphered_value, deciphered_sheet_key)
+  iv = valueIV[sheetID];
+  let deciphered_value = aesDecrypt(ciphered_value, deciphered_sheet_key, iv)
   return deciphered_value;
 }
 
@@ -145,7 +163,8 @@ let add_perms = function(sheetID, userID, perm) {
   // use the derived key to get the secret key
   let ciphered_secret = repo["B"][1];
  
-  let deciphered_secret = aesDecrypt(ciphered_secret, derivedKey);
+  let iv = privateIV["B"];
+  let deciphered_secret = aesDecrypt(ciphered_secret, derivedKey, iv);
   
   // use it to get the sheet key
   let owner_ciphered_sheet_key = perms[sheetID]["B"][1];
@@ -159,8 +178,9 @@ let add_perms = function(sheetID, userID, perm) {
   perms[sheetID][userID] = [perm, new_ciphered_sheet_key];
 }
 
+
 // add_grade:
-//
+// 
 // verify has permissions to add a grade
 // generate sheet_key
 // for each person with permissions, add a permission to see the grade
@@ -172,7 +192,9 @@ let add_grade = function(sheetID, value, userID) {
   // generate the symmetric sheet_key
   sheet_key = crypto.randomBytes(24);
 
-  let ciphered_value = aesEncrypt(value, sheet_key);
+  let iv = crypto.randomBytes(16);
+  valueIV[sheetID] = iv;
+  let ciphered_value = aesEncrypt(value, sheet_key, iv);
 
   // for each person with permissions, add their permission to see the grades,
   // in this baby example, say we are uploading A's grade so everyone has permissions
@@ -214,21 +236,24 @@ http.createServer(function (req, res) {
   let A_ciphered_secret = repo["A"][1];
 
   // decipher the secret key using the derived key from the temp password
-  let A_deciphered_secret = aesDecrypt(A_ciphered_secret, prev_derived_key);
+  let iv = privateIV["A"];
+  let A_deciphered_secret = aesDecrypt(A_ciphered_secret, prev_derived_key, iv);
  
-  
   // hide the secret with the key derived from the user password
-  let changed_password_secret = aesEncrypt(A_deciphered_secret, new_derived_key);
+  privateIV["A"] = crypto.randomBytes(16);
+  iv = privateIV["A"];
+  let changed_password_secret = aesEncrypt(A_deciphered_secret, new_derived_key, iv);
 
   repo["A"][1] = changed_password_secret;
-
 
   // Due to limitations in RSA encryption size, we share a symmetric key which encrypts the secret
   // as opposed to splitting the secret key itself
   let full_key = secrets.random(96);
 
   // encrypt the secret with the full key
-  let secret_under_full_key = aesEncrypt(A_deciphered_secret, full_key);
+  recoveryIV["A"] = crypto.randomBytes(16);
+  iv = recoveryIV["A"];
+  let secret_under_full_key = aesEncrypt(A_deciphered_secret, full_key, iv);
 
   // add the encrypted with full key to the repo
   repo["A"][2]["Key"] = secret_under_full_key;
